@@ -39,8 +39,14 @@
 */
 
 TRandom3 myDice;
-const double inverseBetaPrecision = 1e-5;
-const int inverseBetaMaxCycles = 30;
+const double inverseBetaPrecision = 1e-4;
+const int inverseBetaMaxCycles = 40;
+
+const double alpha_high_cut = 0.999;
+const double alpha_low_cut = 1-alpha_high_cut;
+
+const double ranks_high_cut = 0.99;
+const double ranks_low_cut = 1e-3;
 
 TCanvas* myCanvas = NULL;
 TGraph* rawData = NULL;
@@ -183,11 +189,9 @@ Double_t myVerticalScale(Double_t *x, Double_t *par) {
   return verticalScale(x[0]);
 }
 
-void createCanvasAxes(double coord_x0, double coord_x1) {
+void createCanvasAxes(double coord_x0, double coord_x1, double coord_y0, double coord_y1) {
   myCanvas = new TCanvas("c1","Examples of Gaxis",700,500);
   myCanvas->Draw();
-  double coord_y0 = 1e-3;
-  double coord_y1 = 0.99;
   
   //TF1* nonlinear_x = new TF1("nonlinear_x", "log10(x)", coord_x0, coord_x1);
   TF1* nonlinear_x = new TF1("nonlinear_x", myHorizontalScale, coord_x0, coord_x1, 0);
@@ -212,25 +216,46 @@ void createCanvasAxes(double coord_x0, double coord_x1) {
 }
 
 // line goes y = a*x + b
-void drawCL(double alpha, double a, double b) {
-  if ((alpha<0.001)||(alpha>0.999)) return;
+void drawCL(double alpha, double a, double b,
+            double min_cycles_graph=-1, double max_cycles_graph=-1,
+            double min_rank_graph=-1, double max_rank_graph=-1) {
+  if ((alpha<alpha_low_cut)||(alpha>alpha_high_cut)) return;
+
+  if (min_rank_graph<0) min_rank_graph=ranks_low_cut;
+  if (max_rank_graph<0) max_rank_graph=ranks_high_cut;
+
+  min_rank_graph=verticalScale(min_rank_graph);
+  max_rank_graph=verticalScale(max_rank_graph);
+  
+  bool doHorizontalClipLow = (min_cycles_graph>0);
+  bool doHorizontalClipHigh = (max_cycles_graph>0);
+
+  min_cycles_graph=horizontalScale(min_cycles_graph);
+  max_cycles_graph=horizontalScale(max_cycles_graph);
+
   double xx, yy, dummy;
-  int j;
   int n=failure_list.size();
   TGraph* bound = new TGraph();
 
-  for (int j=1; j<=n; ++j) {
-    yy=inverseBeta(alpha, j, n+1-j);
+  for (double jj=0.1; jj<n+1; jj+=0.01) {
+    yy=inverseBeta(alpha, jj, n+1-jj);
     yy=verticalScale(yy);
     xx = (yy - b)/a;
+
+    if ((doHorizontalClipLow)&&(xx<min_cycles_graph)) continue;
+    if ((doHorizontalClipHigh)&&(xx>max_cycles_graph)) break;
     
-    yy=inverseBeta(0.5, j, n+1-j);
+    yy=inverseBeta(0.5, jj, n+1-jj);
     yy=verticalScale(yy);
-    bound->SetPoint(j-1, xx, yy);
+
+    if (yy>max_rank_graph) break;
+
+    if (yy>min_rank_graph)
+      bound->SetPoint(bound->GetN(), xx, yy);
   }
 
   bound->SetLineColor(kBlue);
-  bound->Draw("lp");
+  bound->Draw("l");
 }
 
 
@@ -282,15 +307,19 @@ double estimateConfidence(double alpha_confidence, double beta_characteristic, b
   return pow(2*totalCycles/chi2, 1/beta_characteristic);
 }
 
-
+// bool draw = true; double clLimit=0.1;
 void macro(bool draw = true, double clLimit=0.1) {
   double minCycles, maxCycles;
   if (!failure_list.size()) loadFailures();
   computeRanks(minCycles, maxCycles);
+  // Variable horizontal axis
   double lmc = log10(minCycles);
   double lMc = log10(maxCycles);
-  minCycles=pow(10, floor(lmc));
-  maxCycles=pow(10, ceil(lMc));
+  minCycles=pow(10, floor(lmc)-0.00001);
+  maxCycles=pow(10, ceil(lMc)+0.00001);
+  // Fixed vertical axis for the moment [ forever? :-) ]
+  double minRanks = ranks_low_cut;
+  double maxRanks = ranks_high_cut;
   double a, b;
   if (rankRegression(adjustedData, a, b)) {
     std::cout << "y = a*x + b" << std::endl;
@@ -300,14 +329,25 @@ void macro(bool draw = true, double clLimit=0.1) {
     estimateConfidence(0.9, a, false);
 
     if (draw) {
-      createCanvasAxes(minCycles, maxCycles);
-      TF1 *myStraight = new TF1("mySytaight", "pol1", horizontalScale(minCycles), horizontalScale(maxCycles));
+      createCanvasAxes(minCycles, maxCycles, minRanks, maxRanks);
+      double line_min_x = horizontalScale(minCycles);
+      double line_max_x = horizontalScale(maxCycles);
+      double line_min_y = verticalScale(minRanks);
+      double line_max_y = verticalScale(maxRanks);
+      { // Let's adjust the line's range not to exceed the graph
+        double y_at_minx = a*line_min_x+b;
+        double y_at_maxx = a*line_max_x+b;
+        if (y_at_minx < line_min_y ) line_min_x = (line_min_y - b)/a;
+        if (y_at_maxx > line_max_y ) line_max_x = (line_max_y - b)/a;
+      }
+      TF1 *myStraight = new TF1("myStraight", "pol1", line_min_x, line_max_x);
       myStraight->SetParameter(0, b);
       myStraight->SetParameter(1, a);
+
       myStraight->Draw("same");
       adjustedData->Draw("P");  
-      drawCL(clLimit,a,b);
-      drawCL(1-clLimit,a,b);
+      drawCL(clLimit,a,b, minCycles, maxCycles, minRanks, maxRanks);
+      drawCL(1-clLimit,a,b, minCycles, maxCycles, minRanks, maxRanks);
     }
   } else {
     std::cout << "Sorry, for some kind of weird reason, I could not fit" << std::endl;
