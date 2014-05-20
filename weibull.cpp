@@ -1,24 +1,25 @@
-#include <TCanvas.h>
-#include <TGaxis.h>
-#include <TAxis.h>
-#include <TGraph.h>
-#include <TF1.h>
-#include <TGraph.h>
-#include <TCanvas.h>
-#include <TMath.h>
+#include <algorithm>
+#include <TObject.h>
+#include <TLegend.h>
 #include <cmath>
 #include <iostream>
-#include <vector>
-#include <algorithm>
+#include <TAxis.h>
+#include <TCanvas.h>
+#include <TF1.h>
 #include <TFitResult.h>
 #include <TFitResultPtr.h>
+#include <TGaxis.h>
+#include <TGraph.h>
+#include <TH1D.h>
+#include <TMath.h>
 #include <TRandom3.h>
+#include <vector>
 
 /* HOW TO TEST
 
    root -l 
    .L weibull.cpp+
-   macro();
+   fitFailures();
 
    OR
    
@@ -29,12 +30,14 @@
    int n=100;
    int maxFailures=5;
    generateFailuresCountTruncated(beta, eta, n, maxFailures);
-   macro();
+   fitFailures();
 
    OR
    
    root -l
-   generateFailuresCountTruncated(1, 1000, 300, 2); macro(false);
+   .L weibull.cpp+
+   generateFailuresCountTruncated(1, 1, 20, 10);
+   fitFailures(false); // fitFailures(true) to draw the plot
 
 */
 
@@ -149,7 +152,9 @@ void computeRanks(double& minCycles, double& maxCycles) {
   rawData = new TGraph();
   adjustedData = new TGraph();
   adjustedData->SetMarkerStyle(8);
-  for (auto & it : failure_list) {
+  std::vector<double>::iterator anIt;
+  for (anIt= failure_list.begin() ; anIt!=failure_list.end(); ++anIt) {
+    const double& it = (*anIt);
     if (it>=0) {
       j++;
       if (j==1) minCycles=it;
@@ -216,10 +221,10 @@ void createCanvasAxes(double coord_x0, double coord_x1, double coord_y0, double 
 }
 
 // line goes y = a*x + b
-void drawCL(double alpha, double a, double b,
-            double min_cycles_graph=-1, double max_cycles_graph=-1,
-            double min_rank_graph=-1, double max_rank_graph=-1) {
-  if ((alpha<alpha_low_cut)||(alpha>alpha_high_cut)) return;
+TGraph* drawCL(double alpha, double a, double b,
+               double min_cycles_graph=-1, double max_cycles_graph=-1,
+               double min_rank_graph=-1, double max_rank_graph=-1) {
+  if ((alpha<alpha_low_cut)||(alpha>alpha_high_cut)) return NULL;
 
   if (min_rank_graph<0) min_rank_graph=ranks_low_cut;
   if (max_rank_graph<0) max_rank_graph=ranks_high_cut;
@@ -256,59 +261,32 @@ void drawCL(double alpha, double a, double b,
 
   bound->SetLineColor(kBlue);
   bound->Draw("l");
+  return bound;
 }
-
-
-
-/* 
-
- double estimateProbabilityPoint(double eta, double beta, double cycles, double arank, int j, int n) {
-   std::cout << "Point cycles=" << cycles;
-   double predictedRank=1-exp(-pow(cycles/eta,beta));
-   std::cout << ", predictedRank=" << predictedRank;
-   std::cout << ", arank=" << arank;
-   double prob=TMath::BetaDistI(predictedRank, j, n+1-j);
-   std::cout << "  P="<<prob<<std::endl;
-
-   double cyclesToFail=pow(-log(1-predictedRank), 1/beta)*eta;
-
-   return prob;
- }
-
-*/
-
-// double estimateProbabilityPoints(double eta, double beta) {
-//   int j=adjustedData->GetN();
-//   int n=failure_list.size();
-//   double cycles, arank;
-//   std::cout << "Estimating probability for points with eta=" << eta
-//             << ", beta=" << beta << ", j=" << j << ", n=" << n << std::endl;
-//   for (int i=0; i<rawData->GetN(); ++i) {
-//     rawData->GetPoint(i, cycles, arank);
-//     estimateProbabilityPoint(eta, beta, cycles, arank, j, n);
-//   }
-//   return 0;
-// }
 
 double estimateConfidence(double alpha_confidence, double beta_characteristic, bool timeTruncated=true) {
   // int j=adjustedData->GetN();
   int r=failure_list.size();
   if (timeTruncated) r++;
-  double cycles, rank;
+  double cycles;
   double totalCycles=0;
-  for (int i=0; i<rawData->GetN(); ++i) {
-    rawData->GetPoint(i, cycles, rank);
+  
+  for (const auto cycleIt : failure_list ) {
+    cycles = fabs(cycleIt);
     totalCycles+=pow(cycles, beta_characteristic);
   }
-  double chi2= TMath::ChisquareQuantile(alpha_confidence, 2*r);
+  double chi2 = TMath::ChisquareQuantile(alpha_confidence, 2*r);
   //std::cout << "totalCycles=" << totalCycles << std::endl;
   //std::cout << "chi^2(alpha, " << ((timeTruncated) ? "2r+1" : "2r") <<" )=" << chi2 << std::endl;
   std::cout << "Eta > " << pow(2*totalCycles/chi2, 1/beta_characteristic)  << " ("<< alpha_confidence*100<<"% CL)" << std::endl;
   return pow(2*totalCycles/chi2, 1/beta_characteristic);
 }
 
-// bool draw = true; double clLimit=0.1;
-void macro(bool draw = true, double clLimit=0.1) {
+double last_beta, last_eta, last_eta_cl;
+
+// bool draw = true; double clLimit=0.9;
+bool fitFailures(bool draw = true, double clLimit=0.9) {
+  bool result = false;
   double minCycles, maxCycles;
   if (!failure_list.size()) loadFailures();
   computeRanks(minCycles, maxCycles);
@@ -322,13 +300,24 @@ void macro(bool draw = true, double clLimit=0.1) {
   double maxRanks = ranks_high_cut;
   double a, b;
   if (rankRegression(adjustedData, a, b)) {
+    result=true;
+    last_beta = a;
+    last_eta = pow(10,-b/a);
     std::cout << "y = a*x + b" << std::endl;
     std::cout << "beta = " << a << std::endl;
     std::cout << "b = " << b << std::endl;
-    std::cout << "eta = " << pow(10,-b/a) << std::endl;
-    estimateConfidence(0.9, a, false);
+    std::cout << "eta = " << last_eta << std::endl;
+    last_eta_cl = estimateConfidence(clLimit, a, false);
 
     if (draw) {
+      TObject* nullObj = (TObject*) NULL;
+      TLegend* myLegend = new TLegend(0.65, .15, .98, .5);
+      myLegend->SetMargin(0.1);
+      myLegend->SetFillColor(kWhite);
+      myLegend->AddEntry(nullObj, Form("#beta = %.1f", last_beta), "");
+      myLegend->AddEntry(nullObj, Form("#eta = %.1f", last_eta), "");
+      myLegend->AddEntry(nullObj, Form("#eta > %.1f (%.0f%%  CL)", last_eta_cl, clLimit*100), "");
+
       createCanvasAxes(minCycles, maxCycles, minRanks, maxRanks);
       double line_min_x = horizontalScale(minCycles);
       double line_max_x = horizontalScale(maxCycles);
@@ -347,9 +336,69 @@ void macro(bool draw = true, double clLimit=0.1) {
       myStraight->Draw("same");
       adjustedData->Draw("P");  
       drawCL(clLimit,a,b, minCycles, maxCycles, minRanks, maxRanks);
-      drawCL(1-clLimit,a,b, minCycles, maxCycles, minRanks, maxRanks);
+      TGraph* aGr = drawCL(1-clLimit,a,b, minCycles, maxCycles, minRanks, maxRanks);
+      myLegend->AddEntry(aGr, Form("%.0f%% CL", clLimit*100), "l");
+      myLegend->Draw();
     }
   } else {
     std::cout << "Sorry, for some kind of weird reason, I could not fit" << std::endl;
   }
+  return result;
+}
+
+// TO TEST:
+/*
+
+  double real_beta;
+  int test_samples; int first_failures;
+  int n_experiments;
+  double alpha_cl;
+  real_beta = 1;
+  test_samples = 20;
+  first_failures = 10;
+  n_experiments = 100;
+  alpha_cl = 0.9;
+
+  OR
+
+  root -l
+  .L weibull.cpp+
+  testMC(1, 20, 10, 100);
+
+*/
+
+TH1D* etaEstimates;
+TH1D* betaEstimates;
+
+// Since eta is a scale factor, it is always taken = 1
+// without loss of generality
+void testMC(double real_beta,
+            int test_samples, int first_failures,
+            int n_experiments, double alpha_cl=0.9) {
+
+  double fractionEtaAbove = 0;
+
+  etaEstimates = new TH1D("etaEstimates", "#eta estimates", n_experiments/10., 0, 10);
+  betaEstimates = new TH1D("betaEstimates", "#beta estimates", n_experiments/10., 0, 10);
+
+  for (int i=0; i<n_experiments; ++i) {
+    generateFailuresCountTruncated(real_beta, 1., test_samples, first_failures);
+    fitFailures(false, alpha_cl);
+    if (last_eta_cl>1.) fractionEtaAbove++;
+    etaEstimates->Fill(last_eta);
+    betaEstimates->Fill(last_beta);
+  }
+  fractionEtaAbove/=n_experiments;
+
+  myCanvas = new TCanvas("MCTESTS", "Monte-Carlo tests", 1200, 600);
+  myCanvas->Divide(2);
+  myCanvas->cd(1);
+  etaEstimates->Draw();
+  myCanvas->cd(2);
+  betaEstimates->Draw();
+
+  std::cout << "Eta was above the real value in "
+            << fractionEtaAbove*100 << "% of the experiments" << std::endl;
+
+  
 }
